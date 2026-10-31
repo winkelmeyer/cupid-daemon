@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.png
+*.xml
+swipe.log
+runs/
+persona.md
