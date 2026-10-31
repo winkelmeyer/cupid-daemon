@@ -1,3 +1,4 @@
+import os
 import random
 import sys
 import time
@@ -8,6 +9,8 @@ import subprocess
 import xml.etree.ElementTree as ET
 
 import uiautomator2 as u2
+
+from comments import write_comment
 
 APPS = {
     "hinge": {
@@ -28,6 +31,8 @@ MAX_DELAY_S = 14
 MAX_AGE = 45
 SKIP_IF_PRESENT = {"Have children", "Life partner", "Long-term relationship"}
 LOG = Path(__file__).parent / "swipe.log"
+RUNS = Path(__file__).parent / "runs"
+OUT_OF_LIKES = "You're out of free likes for today"
 
 
 def log(line):
@@ -58,8 +63,10 @@ def read_profile(device):
     for _ in range(6):
         for node in ET.fromstring(device.dump_hierarchy()).iter("node"):
             text = node.get("text") or ""
-            if len(text) > 1 and text not in lines:
-                lines.append(text)
+            desc = node.get("content-desc") or ""
+            field = desc if desc.startswith(("Prompt:", "Poll")) else text
+            if len(field) > 1 and field not in lines:
+                lines.append(field)
         device.shell("input swipe 540 1800 540 900 300")
         time.sleep(1)
     for _ in range(3):
@@ -111,32 +118,69 @@ def send_like(device, config, comment):
         anyway.click()
 
 
+def out_of_likes(device):
+    if not device(text=OUT_OF_LIKES).exists(timeout=3):
+        return False
+    device(description="Close").click()
+    return True
+
+
+def write_report(app, rows):
+    RUNS.mkdir(exist_ok=True)
+    report = RUNS / f"{datetime.now():%Y-%m-%d-%H%M}-{app}.md"
+    likes = sum(1 for row in rows if row[2].startswith("like"))
+    lines = [
+        f"# {app} run {datetime.now():%Y-%m-%d %H:%M}",
+        "",
+        f"{len(rows)} profiles, {likes} likes, {len(rows) - likes} skips",
+        "",
+        "| Time | Profile | Action | Reason / comment |",
+        "|---|---|---|---|",
+    ] + [f"| {t} | {name} | {action} | {detail} |" for t, name, action, detail in rows]
+    report.write_text("\n".join(lines) + "\n")
+    log(f"report written to {report}")
+
+
 def swipe(device, app, count, auto):
     config = APPS[app]
     if not config["like"] or not config["skip"]:
         raise RuntimeError(f"{app} selectors not configured yet; run `dump {app}` first")
     device.app_start(config["package"])
     time.sleep(5)
-    for i in range(count):
-        skip_button = device(**config["skip"])
-        if not skip_button.exists(timeout=5):
-            raise RuntimeError("no profile on screen")
-        name = skip_button.info["contentDescription"].removeprefix("Skip ")
-        reason = rule_verdict(read_profile(device))
-        action = "skip" if reason else ("like" if auto else ask_human(device, name))
-        if action == "quit":
-            break
-        if action == "like":
-            send_like(device, config)
-        else:
-            tap(device, config["skip"])
-        log(f"{app} {i + 1}/{count} {name} {action}" + (f" (rule: {reason})" if reason else ""))
-        time.sleep(random.uniform(MIN_DELAY_S, MAX_DELAY_S))
+    rows = []
+    try:
+        for _ in range(count):
+            skip_button = device(**config["skip"])
+            if not skip_button.exists(timeout=5):
+                raise RuntimeError("no profile on screen")
+            name = skip_button.info["contentDescription"].removeprefix("Skip ")
+            lines = read_profile(device)
+            reason = rule_verdict(lines)
+            action = "skip" if reason else ("like" if auto else ask_human(device, name))
+            if action == "quit":
+                break
+            now = f"{datetime.now():%H:%M}"
+            if action == "skip":
+                tap(device, config["skip"])
+                rows.append((now, name, "skip", f"rule: {reason}" if reason else "manual"))
+                log(f"{app} {name} skip" + (f" (rule: {reason})" if reason else ""))
+            else:
+                comment = write_comment(lines)
+                send_like(device, config, comment)
+                if out_of_likes(device):
+                    rows.append((now, name, "like UNCONFIRMED (limit hit)", comment))
+                    log(f"{app} {name} like UNCONFIRMED, out of likes: {comment}")
+                    break
+                rows.append((now, name, "like + comment", comment))
+                log(f"{app} {name} like + comment: {comment}")
+            time.sleep(random.uniform(MIN_DELAY_S, MAX_DELAY_S))
+    finally:
+        write_report(app, rows)
 
 
 def main():
     command, app = sys.argv[1], sys.argv[2]
-    device = u2.connect()
+    device = u2.connect(os.environ.get("PHONE_ADB"))
     if command == "dump":
         dump(device, app)
     elif command == "swipe":

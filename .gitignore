@@ -5,3 +5,4 @@ __pycache__/
 swipe.log
 runs/
 persona.md
+.env
