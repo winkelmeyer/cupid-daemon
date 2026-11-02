@@ -9,9 +9,9 @@ ID = "com.tinder:id/"
 DETAIL = ID + "sparksProfileDetailScrollView"
 STACK = ID + "recs_cardstack"
 NOISE_PREFIXES = ("Reply", "Photo of ", "Photo by ", "More options")
-OUT_OF_LIKES = "(?i).*out of likes.*"
+OUT_OF_LIKES = "(?i).*(out of likes|no daily cap|unlimited likes).*"
 MATCH = "(?i).*it.s a match.*"
-AD_MARKERS = re.compile(r"(?i)\b(sponsored|promoted|advertisement|learn more|shop now|install|download|sign up|get the app|book now|double date)\b|^ad$")
+AD_MARKERS = re.compile(r"(?i)^(ad|sponsored|promoted|learn more|visit site|shop now|install|install now|download|sign up|get the app|book now|try double date\.?)$")
 DISMISS = ["Close", "Close sheet", "Maybe later", "Not now", "No thanks", "No Thanks", "Skip"]
 RUNS = Path(__file__).parent / "runs"
 
