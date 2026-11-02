@@ -223,8 +223,15 @@ def next_tinder_profile() -> str:
     if not state["likes_left"]:
         return "No likes left today. Stop and summarize."
     while state["seen"] < MAX_PROFILES:
-        if tinder.top_card_name(device) is None:
+        card = tinder.next_card(device)
+        if card is None:
             return "No more profiles right now. Stop and summarize."
+        if card["ad"]:
+            tinder.screenshot(device, "ad")
+            tinder.skip(device)
+            record(card["label"], "skip", "ad, not a profile")
+            time.sleep(random.uniform(2, 5))
+            continue
         name, lines = tinder.read_profile(device)
         state["seen"] += 1
         reason = rule_verdict(lines)
