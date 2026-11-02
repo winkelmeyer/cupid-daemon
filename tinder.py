@@ -11,7 +11,7 @@ STACK = ID + "recs_cardstack"
 NOISE_PREFIXES = ("Reply", "Photo of ", "Photo by ", "More options")
 OUT_OF_LIKES = "(?i).*out of likes.*"
 MATCH = "(?i).*it.s a match.*"
-AD_MARKERS = re.compile(r"(?i)\b(sponsored|promoted|advertisement|learn more|shop now|install|download|sign up|get the app|book now)\b|^ad$")
+AD_MARKERS = re.compile(r"(?i)\b(sponsored|promoted|advertisement|learn more|shop now|install|download|sign up|get the app|book now|double date)\b|^ad$")
 DISMISS = ["Close", "Close sheet", "Maybe later", "Not now", "No thanks", "No Thanks", "Skip"]
 RUNS = Path(__file__).parent / "runs"
 
@@ -26,12 +26,18 @@ def top_card(device):
     stack = next((node for node in root.iter("node") if node.get("resource-id") == STACK), None)
     if stack is None:
         return None
-    return next((node for node in stack.iter("node") if node.get("class", "").endswith("CardView")), None)
+    cards = [node for node in stack.iter("node") if node.get("class", "").endswith("CardView")]
+    return max(cards, key=card_width, default=None)
+
+
+def card_width(card):
+    left, _, right, _ = map(int, card.get("bounds").replace("][", ",").strip("[]").split(","))
+    return right - left
 
 
 def card_key(card):
     headline = next((node for node in card.iter("node") if node.get("resource-id") == ID + "headline_view"), None)
-    return (card.get("content-desc") or "", headline.get("content-desc") if headline is not None else "")
+    return (card.get("content-desc") or "", headline.get("content-desc") if headline is not None else "", tuple(card_texts(card)[:6]))
 
 
 def card_texts(card):
@@ -40,7 +46,8 @@ def card_texts(card):
 
 def is_ad(card):
     has_age = any(node.get("resource-id") == ID + "recs_card_user_headline_age" for node in card.iter("node"))
-    return not has_age or any(AD_MARKERS.search(text) for text in card_texts(card))
+    paired = " & " in card_key(card)[1]
+    return not has_age or paired or any(AD_MARKERS.search(text) for text in card_texts(card))
 
 
 def card_label(card):
