@@ -66,12 +66,12 @@ def dismiss_popups(device):
                 time.sleep(2)
                 break
         else:
-            if device.app_current()["package"] != PACKAGE:
-                device.app_start(PACKAGE)
-                time.sleep(5)
-            elif device(resourceId=ID + "action_discovery").exists:
+            if device(resourceId=ID + "action_discovery").exists:
                 device(resourceId=ID + "action_discovery").click()
                 time.sleep(3)
+            elif not device(packageName=PACKAGE).exists:
+                device.app_start(PACKAGE)
+                time.sleep(5)
             else:
                 device.press("back")
                 time.sleep(2)
