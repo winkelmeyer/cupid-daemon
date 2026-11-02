@@ -1,27 +1,38 @@
+import argparse
 import os
 import random
 import time
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
+import xml.etree.ElementTree as ET
+
 import uiautomator2 as u2
 from anthropic import beta_tool
 
-import imessage
+import mail as approvals
+import tinder
+from llm import create_client
 from hinge_chat import list_your_turn_chats, open_chat, read_open_chat, send_in_open_chat
-from swipe import APPS, log, out_of_likes, read_profile, rule_verdict, send_like, tap, write_report
+from swipe import APPS, log, out_of_likes, read_profile, rule_verdict, send_like, tap, type_slowly, write_report
 
 MODEL = "claude-opus-5-5"
 MAX_PROFILES = 40
 APPROVAL_WINDOW_S = 3 * 60 * 60
 HERE = Path(__file__).parent
 HINGE = APPS["hinge"]
+INCOMING = {
+    "tab": {"descriptionStartsWith": "Likes You"},
+    "card": {"descriptionContains": " liked your"},
+    "match": {"descriptionStartsWith": "Match with "},
+    "skip": {"description": "Skip"},
+}
+MAX_INCOMING = 20
 
-device = u2.connect(os.environ.get("PHONE_ADB"))
+device = None
 rows = []
 proposals = {}
-state = {"current": None, "seen": 0, "likes_left": True}
+state = {"current": None, "seen": 0, "likes_left": True, "incoming_seen": 0, "app": "hinge"}
 
 SYSTEM = f"""You run Daniel's Hinge account for one daily session. Persona and voice:
 
@@ -33,15 +44,29 @@ Session plan:
    A like always carries a comment that hooks on something specific in her profile, in Daniel's voice,
    one or two sentences, only facts from the persona.
 2. Stop liking when a tool reports no likes left or no more profiles.
-3. Call list_chats. For each chat, call read_chat, then propose_reply with the reply Daniel would send.
+3. Call next_incoming_like repeatedly. These people already liked Daniel. Hard rules are enforced by the tool.
+   Decide from Daniel's preferences: match_incoming (with a comment, same rules as a like) or skip_incoming. Stop when it
+   reports none left.
+4. Call list_chats. For each chat, call read_chat, then propose_reply with the reply Daniel would send.
    Replies are only proposals: Daniel approves each one before it is sent. Never claim to be anything
    other than Daniel, never invent facts about him, never push for anything she hasn't signalled interest in.
-4. Finish with a two-line summary."""
+5. Finish with a two-line summary."""
+
+TINDER_SYSTEM = f"""You run Daniel's Tinder account for one daily session. Persona and voice:
+
+{(HERE / "persona.md").read_text()}
+
+Session plan:
+1. Call next_profile repeatedly. Hard rules are already enforced by the tool. For each profile it returns,
+   decide like or skip from Daniel's preferences, then call like_profile or skip_profile with a short reason.
+   Tinder likes carry no comment; the reason is only for Daniel's log.
+2. Stop when a tool reports no likes left or no more profiles.
+3. Finish with a two-line summary."""
 
 
 def record(name, action, detail):
     rows.append((f"{datetime.now():%H:%M}", name, action, detail))
-    log(f"hinge {name} {action}: {detail}")
+    log(f"{state['app']} {name} {action}: {detail}")
 
 
 @beta_tool
@@ -97,6 +122,156 @@ def like_with_comment(comment: str) -> str:
     return "sent"
 
 
+def bounds_center(bounds):
+    left, top, right, bottom = map(int, bounds.replace("][", ",").strip("[]").split(","))
+    return (left + right) // 2, (top + bottom) // 2
+
+
+def wait_for_node(matches, timeout_s=10):
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        for node in ET.fromstring(device.dump_hierarchy()).iter("node"):
+            if matches(node):
+                return node
+        time.sleep(1)
+    return None
+
+
+@beta_tool
+def next_incoming_like() -> str:
+    """Open the next person in Hinge's Likes You tab who passes Daniel's hard rules.
+    People failing the rules are skipped automatically. Returns the profile fields, one per line."""
+    while state["incoming_seen"] < MAX_INCOMING:
+        for _ in range(3):
+            if device(**INCOMING["tab"]).exists(timeout=3):
+                break
+            device.press("back")
+            time.sleep(2)
+        else:
+            device.screenshot(str(HERE / "runs" / f"{datetime.now():%Y-%m-%d-%H%M}-no-likes-tab.png"))
+        tap(device, INCOMING["tab"])
+        time.sleep(3)
+        card = device(**INCOMING["card"])
+        if card.exists(timeout=5):
+            card.click()
+            time.sleep(4)
+        match = device(**INCOMING["match"])
+        if not match.exists(timeout=3):
+            return "No incoming likes left. Move on to the chats."
+        name = match.info["contentDescription"].removeprefix("Match with ").strip()
+        lines = read_profile(device)
+        state["incoming_seen"] += 1
+        state["current"] = name
+        reason = rule_verdict(lines)
+        if not reason:
+            return f"Name: {name}\n" + "\n".join(lines)
+        tap(device, INCOMING["skip"])
+        record(name, "incoming skip", f"rule: {reason}")
+        time.sleep(random.uniform(4, 10))
+    return "Incoming limit for this session reached. Move on to the chats."
+
+
+@beta_tool
+def match_incoming(comment: str) -> str:
+    """Like back the person last returned by next_incoming_like with a comment, creating a match.
+
+    Args:
+        comment: The comment in Daniel's voice, one or two sentences, no emojis.
+    """
+    name = state["current"]
+    tap(device, INCOMING["match"])
+    field = wait_for_node(lambda node: node.get("class") == "android.widget.EditText")
+    if field is None:
+        device.screenshot(str(HERE / "runs" / f"{datetime.now():%Y-%m-%d-%H%M%S}-no-match-sheet.png"))
+        raise RuntimeError("match sheet did not open")
+    device.click(*bounds_center(field.get("bounds")))
+    time.sleep(1)
+    type_slowly(device, comment)
+    time.sleep(random.uniform(1.5, 3))
+    confirm = wait_for_node(lambda node: node.get("text") == f"Match with {name}")
+    if confirm is None:
+        device.press("back")
+        confirm = wait_for_node(lambda node: node.get("text") == f"Match with {name}")
+    if confirm is None:
+        raise RuntimeError("match confirm button not found")
+    device.click(*bounds_center(confirm.get("bounds")))
+    time.sleep(5)
+    if wait_for_node(lambda node: node.get("text") == "Cancel", timeout_s=3) is not None:
+        raise RuntimeError(f"match with {name} not confirmed; still on the match screen")
+    record(state["current"], "incoming match + comment", comment)
+    time.sleep(random.uniform(4, 10))
+    return "matched"
+
+
+@beta_tool
+def skip_incoming(reason: str) -> str:
+    """Remove the person last returned by next_incoming_like from Likes You.
+
+    Args:
+        reason: Short reason, for Daniel's log.
+    """
+    tap(device, INCOMING["skip"])
+    record(state["current"], "incoming skip", reason)
+    time.sleep(random.uniform(4, 10))
+    return "skipped"
+
+
+@beta_tool
+def next_tinder_profile() -> str:
+    """Show the next Tinder profile that passes Daniel's hard rules (age, kids, intentions).
+    Profiles failing the rules are skipped automatically. Returns the profile fields, one per line."""
+    if not state["likes_left"]:
+        return "No likes left today. Stop and summarize."
+    while state["seen"] < MAX_PROFILES:
+        if tinder.top_card_name(device) is None:
+            return "No more profiles right now. Stop and summarize."
+        name, lines = tinder.read_profile(device)
+        state["seen"] += 1
+        reason = rule_verdict(lines)
+        if not reason:
+            state["current"] = name
+            return f"Name: {name}\n" + "\n".join(lines)
+        tinder.skip(device)
+        record(name, "skip", f"rule: {reason}")
+        time.sleep(random.uniform(4, 10))
+    return "Profile limit for this session reached. Stop and summarize."
+
+
+@beta_tool
+def skip_tinder_profile(reason: str) -> str:
+    """Pass on the profile last returned by next_profile.
+
+    Args:
+        reason: Short reason, for Daniel's log.
+    """
+    tinder.skip(device)
+    record(state["current"], "skip", reason)
+    time.sleep(random.uniform(4, 12))
+    return "skipped"
+
+
+@beta_tool
+def like_tinder_profile(reason: str) -> str:
+    """Like the profile last returned by next_profile.
+
+    Args:
+        reason: Short reason for the like, for Daniel's log.
+    """
+    result = tinder.like(device)
+    if result == "out of likes":
+        state["likes_left"] = False
+        record(state["current"], "like UNCONFIRMED (limit hit)", reason)
+        return "Tinder says no likes left. Stop and summarize."
+    record(state["current"], "like + MATCH" if result == "match" else "like", reason)
+    time.sleep(random.uniform(4, 12))
+    return "matched" if result == "match" else "liked"
+
+
+next_tinder_profile.name = "next_profile"
+skip_tinder_profile.name = "skip_profile"
+like_tinder_profile.name = "like_profile"
+
+
 @beta_tool
 def list_chats() -> str:
     """List matches where it is Daniel's turn to reply."""
@@ -128,17 +303,26 @@ def propose_reply(name: str, reply: str) -> str:
     return f"queued as #{number}"
 
 
-def run_agent():
-    client = anthropic.Anthropic()
+def run_agent(no_likes=False):
+    client = create_client()
+    system = SYSTEM
+    tools = [list_chats, read_chat, propose_reply]
+    if state["app"] == "tinder":
+        system = TINDER_SYSTEM
+        tools = [next_tinder_profile, skip_tinder_profile, like_tinder_profile]
+    elif not no_likes:
+        tools = [next_profile, skip_profile, like_with_comment, next_incoming_like, match_incoming, skip_incoming, *tools]
+    instruction = f"Start today's session ({datetime.now():%A %Y-%m-%d})."
+    if no_likes:
+        instruction += " Likes are exhausted today. Only check chats and propose replies."
     runner = client.beta.messages.tool_runner(
         model=MODEL,
+        thread=False,
         max_tokens=16000,
         output_config={"effort": "medium"},
-        betas=["server-side-fallback-2026-07-01"],
-        fallbacks="default",
-        system=SYSTEM,
-        tools=[next_profile, skip_profile, like_with_comment, list_chats, read_chat, propose_reply],
-        messages=[{"role": "user", "content": f"Start today's session ({datetime.now():%A %Y-%m-%d})."}],
+        system=system,
+        tools=tools,
+        messages=[{"role": "user", "content": instruction}],
     )
     final = runner.until_done()
     if final.stop_reason == "refusal":
@@ -150,8 +334,8 @@ def approve_and_send():
     if not proposals:
         return
     for number, (name, reply) in proposals.items():
-        imessage.send(f"[{number}] {name}\n→ {reply}\n\ny{number} send · n{number} skip · e{number} <text> edit")
-    decisions = imessage.wait_for_decisions(set(proposals), APPROVAL_WINDOW_S)
+        approvals.send(f"[{number}] {name}\n→ {reply}\n\ny{number} send · n{number} skip · e{number} <text> edit")
+    decisions = approvals.wait_for_decisions(set(proposals), APPROVAL_WINDOW_S)
     for number, (name, reply) in proposals.items():
         verb, text = decisions.get(number, ("expired", ""))
         if verb in ("y", "e"):
@@ -161,18 +345,28 @@ def approve_and_send():
             record(name, "reply sent", message)
         else:
             record(name, "reply not sent", f"{verb}: {reply}")
-    imessage.send(f"cupid-daemon: {sum(1 for r in rows if r[2] == 'reply sent')} replies sent.")
+    approvals.send(f"cupid-daemon: {sum(1 for r in rows if r[2] == 'reply sent')} replies sent.")
 
 
 def main():
-    device.app_start(HINGE["package"])
+    global device, MAX_PROFILES
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-likes", action="store_true")
+    parser.add_argument("--device", default=os.environ.get("PHONE_ADB"))
+    parser.add_argument("--app", choices=["hinge", "tinder"], default="hinge")
+    parser.add_argument("--max-profiles", type=int, default=MAX_PROFILES)
+    args = parser.parse_args()
+    MAX_PROFILES = args.max_profiles
+    state["app"] = args.app
+    device = u2.connect(args.device)
+    device.app_start(tinder.PACKAGE if args.app == "tinder" else HINGE["package"])
     time.sleep(5)
     try:
-        summary = run_agent()
+        summary = run_agent(no_likes=args.no_likes)
         log(f"agent summary: {summary}")
         approve_and_send()
     finally:
-        write_report("hinge-agent", rows)
+        write_report(f"{args.app}-agent", rows)
 
 
 if __name__ == "__main__":

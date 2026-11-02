@@ -1,13 +1,13 @@
 from pathlib import Path
 
-import anthropic
+from llm import create_client
 
 MODEL = "claude-sonnet-5-5"
 PERSONA = Path(__file__).parent / "persona.md"
 
 
 def write_comment(profile_lines):
-    client = anthropic.Anthropic()
+    client = create_client()
     response = client.messages.create(
         model=MODEL,
         max_tokens=200,

@@ -6,3 +6,5 @@ swipe.log
 runs/
 persona.md
 .env
+.phone-address
+venv

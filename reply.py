@@ -1,7 +1,7 @@
 import re
 import xml.etree.ElementTree as ET
 
-import anthropic
+from llm import create_client
 import uiautomator2 as u2
 
 MODEL = "claude-sonnet-5-5"
@@ -15,7 +15,7 @@ def visible_chat_text(device):
 
 
 def suggest(chat):
-    client = anthropic.Anthropic()
+    client = create_client()
     response = client.messages.create(
         model=MODEL,
         max_tokens=400,
