@@ -29,7 +29,8 @@ DAILY_LIMIT = 40
 MIN_DELAY_S = 4
 MAX_DELAY_S = 14
 MAX_AGE = 45
-SKIP_IF_PRESENT = {"Have children", "Life partner", "Long-term relationship"}
+SKIP_IF_PRESENT = {"Have children", "Life partner", "Long-term relationship", "Long-term partner"}
+SKIP_IF_STARTS_WITH = ("I have children",)
 LOG = Path(__file__).parent / "swipe.log"
 RUNS = Path(__file__).parent / "runs"
 OUT_OF_LIKES = "You're out of free likes for today"
@@ -77,11 +78,9 @@ def read_profile(device):
 
 def rule_verdict(lines):
     ages = [int(line) for line in lines if line.isdigit() and 18 <= int(line) <= 99]
-    if not ages:
-        return None
-    if ages[0] > MAX_AGE:
+    if ages and ages[0] > MAX_AGE:
         return f"age {ages[0]}"
-    hits = SKIP_IF_PRESENT.intersection(lines)
+    hits = SKIP_IF_PRESENT.intersection(lines) | {line for line in lines if line.startswith(SKIP_IF_STARTS_WITH)}
     if hits:
         return ", ".join(sorted(hits))
     return None
