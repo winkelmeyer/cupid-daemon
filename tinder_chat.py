@@ -14,6 +14,12 @@ def open_matches(device):
     if device(description="Exit chat").exists:
         device(description="Exit chat").click()
         time.sleep(2)
+    for _ in range(3):
+        if device(resourceId=ID + "action_matches").exists(timeout=3):
+            break
+        tinder.screenshot(device, "chat-popup")
+        device.press("back")
+        time.sleep(2)
     device(resourceId=ID + "action_matches").click()
     time.sleep(3)
     if not device(resourceId=ID + "matchesSearchBar").exists(timeout=5):
