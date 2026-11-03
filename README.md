@@ -63,7 +63,7 @@ venv/bin/python scripts/schedule.py enable
 venv/bin/python scripts/schedule.py disable
 ```
 
-`prepare` writes a reviewable plist under `runs/` without enabling it. `enable` requires a passing remote connection check before installing the job. The job starts at 18:00 local time, waits up to three hours, then runs a full Hinge session followed by a full Tinder session. A failure in one app does not stop the other; the job exits non-zero if either failed. It keeps the Mac awake during the delay and run. The Mac must be logged in, awake and online at the scheduled time; this does not configure a system wake timer. Infisical access and the mail app password in the login Keychain must remain available. Output goes to `runs/daily.log`.
+`prepare` writes a reviewable plist under `runs/` without enabling it. `enable` requires a passing remote connection check before installing the job. The job starts at 18:00 local time, waits up to three hours, then runs a full Hinge session followed by a full Tinder session. A failure in one app does not stop the other; the job exits non-zero if either failed. It keeps the Mac awake during the delay and run. The Mac must be logged in, awake and online at the scheduled time; this does not configure a system wake timer. Infisical access and the mail app password in the login Keychain must remain available. Output goes to `runs/daily.log`. Each run raises the phone's screen timeout to three hours and restores the previous value when it ends, so the phone does not lock while the run waits for email approvals. The phone must be unlocked when a run starts; a PIN lock cannot be passed remotely.
 
 ## Tinder
 
@@ -74,4 +74,6 @@ venv/bin/python scripts/schedule.py disable
 
 `tinder.py` reads the opened profile (only the detail view, not the cards stacked behind it), then likes or passes with the gamepad buttons and checks that the next card appeared. The same hard rules apply; Tinder's values are `Long-term partner` and family plans starting with `I have children`. Free Tinder likes carry no comment, so the agent logs a reason instead. Only the top card of the real swipe deck counts; Tinder's own Preview Profile and Profile tab do not. A card with no age or with ad wording (Sponsored, Learn more, Install, …) is treated as an ad: it is passed, screenshotted to `runs/`, and never shown to the agent. Promo sheets are dismissed before each profile and screenshotted to `runs/`. A match pop-up is screenshotted and dismissed. The session stops on Tinder's out-of-likes screen, an empty deck, or `--max-profiles` (default 40, the daily job uses 150).
 
-Not automated on Tinder yet: the Likes tab (needs Tinder Gold) and chat replies (mapped once there is a first match).
+After swiping, the agent works the Chat tab (`tinder_chat.py`): every new match without messages and every chat marked "Your Turn" gets either a proposed message or a proposed unmatch. It reads her full profile from the chat's avatar before deciding, so openers hook on something specific. Both go into the approval email (`y3` sends or unmatches, `n3` skips, `e3 <text>` edits a message); nothing is sent or unmatched without a `y`. The typed text is checked against the approved text before Send is tapped.
+
+Not automated on Tinder yet: the Likes tab (needs Tinder Gold).

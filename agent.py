@@ -12,6 +12,7 @@ from anthropic import beta_tool
 
 import mail as approvals
 import tinder
+import tinder_chat
 from llm import create_client
 from hinge_chat import list_your_turn_chats, open_chat, read_open_chat, send_in_open_chat
 from swipe import APPS, log, out_of_likes, read_profile, rule_verdict, send_like, tap, type_slowly, write_report
@@ -32,6 +33,7 @@ MAX_INCOMING = 20
 device = None
 rows = []
 proposals = {}
+unmatches = {}
 state = {"current": None, "seen": 0, "likes_left": True, "incoming_seen": 0, "app": "hinge"}
 
 SYSTEM = f"""You run Daniel's Hinge account for one daily session. Persona and voice:
@@ -61,7 +63,13 @@ Session plan:
    decide like or skip from Daniel's preferences, then call like_profile or skip_profile with a short reason.
    Tinder likes carry no comment; the reason is only for Daniel's log.
 2. Stop when a tool reports no likes left or no more profiles.
-3. Finish with a two-line summary."""
+3. Call list_chats. Every match must get either a message or an unmatch. For each one, call read_chat
+   (it returns her profile and the messages so far), then either propose_reply with the message Daniel
+   would send (for a new match: an opener that hooks on something specific in her profile), or
+   propose_unmatch with a short reason if she fails Daniel's hard rules or is clearly not a fit.
+   Both are only proposals: Daniel approves each one before anything happens. Never claim to be anything
+   other than Daniel, never invent facts about him.
+4. Finish with a two-line summary."""
 
 
 def record(name, action, detail):
@@ -281,7 +289,10 @@ like_tinder_profile.name = "like_profile"
 
 @beta_tool
 def list_chats() -> str:
-    """List matches where it is Daniel's turn to reply."""
+    """List matches where it is Daniel's turn: new matches without messages and chats waiting for his reply."""
+    if state["app"] == "tinder":
+        chats = tinder_chat.list_chats(device)
+        return "\n".join(f"{name} ({status})" for name, status in chats) if chats else "No chats waiting for Daniel."
     names = list_your_turn_chats(device)
     return "\n".join(names) if names else "No chats waiting for a reply."
 
@@ -293,6 +304,11 @@ def read_chat(name: str) -> str:
     Args:
         name: The match's name exactly as returned by list_chats.
     """
+    if state["app"] == "tinder":
+        tinder_chat.open_chat(device, name)
+        profile = tinder_chat.read_match_profile(device)
+        messages = tinder_chat.read_open_chat(device) or ["(no messages yet)"]
+        return "Her profile:\n" + "\n".join(profile) + "\n\nMessages:\n" + "\n".join(messages)
     open_chat(device, name)
     return "\n".join(read_open_chat(device))
 
@@ -305,8 +321,21 @@ def propose_reply(name: str, reply: str) -> str:
         name: The match's name exactly as returned by list_chats.
         reply: The reply in Daniel's voice.
     """
-    number = len(proposals) + 1
+    number = len(proposals) + len(unmatches) + 1
     proposals[number] = (name, reply)
+    return f"queued as #{number}"
+
+
+@beta_tool
+def propose_unmatch(name: str, reason: str) -> str:
+    """Queue an unmatch for Daniel's approval. Nothing happens until he approves it.
+
+    Args:
+        name: The match's name exactly as returned by list_chats.
+        reason: Why she is not a fit, for Daniel's approval email.
+    """
+    number = len(proposals) + len(unmatches) + 1
+    unmatches[number] = (name, reason)
     return f"queued as #{number}"
 
 
@@ -316,7 +345,7 @@ def run_agent(no_likes=False):
     tools = [list_chats, read_chat, propose_reply]
     if state["app"] == "tinder":
         system = TINDER_SYSTEM
-        tools = [next_tinder_profile, skip_tinder_profile, like_tinder_profile]
+        tools = [next_tinder_profile, skip_tinder_profile, like_tinder_profile, list_chats, read_chat, propose_reply, propose_unmatch]
     elif not no_likes:
         tools = [next_profile, skip_profile, like_with_comment, next_incoming_like, match_incoming, skip_incoming, *tools]
     instruction = f"Start today's session ({datetime.now():%A %Y-%m-%d})."
@@ -338,21 +367,33 @@ def run_agent(no_likes=False):
 
 
 def approve_and_send():
-    if not proposals:
+    if not proposals and not unmatches:
         return
+    app = state["app"].capitalize()
     for number, (name, reply) in proposals.items():
-        approvals.send(f"[{number}] {name}\n→ {reply}\n\ny{number} send · n{number} skip · e{number} <text> edit")
-    decisions = approvals.wait_for_decisions(set(proposals), APPROVAL_WINDOW_S)
+        approvals.send(f"[{number}] {app}: {name}\n→ {reply}\n\ny{number} send · n{number} skip · e{number} <text> edit")
+    for number, (name, reason) in unmatches.items():
+        approvals.send(f"[{number}] {app}: UNMATCH {name}\nWhy: {reason}\n\ny{number} unmatch · n{number} keep")
+    decisions = approvals.wait_for_decisions(set(proposals) | set(unmatches), APPROVAL_WINDOW_S)
+    chat = tinder_chat if state["app"] == "tinder" else None
     for number, (name, reply) in proposals.items():
         verb, text = decisions.get(number, ("expired", ""))
         if verb in ("y", "e"):
             message = text if verb == "e" and text else reply
-            open_chat(device, name)
-            send_in_open_chat(device, message)
+            (chat.open_chat if chat else open_chat)(device, name)
+            (chat.send_in_open_chat if chat else send_in_open_chat)(device, message)
             record(name, "reply sent", message)
         else:
             record(name, "reply not sent", f"{verb}: {reply}")
-    approvals.send(f"cupid-daemon: {sum(1 for r in rows if r[2] == 'reply sent')} replies sent.")
+    for number, (name, reason) in unmatches.items():
+        verb, _ = decisions.get(number, ("expired", ""))
+        if verb == "y":
+            tinder_chat.open_chat(device, name)
+            tinder_chat.unmatch_open_chat(device, name)
+            record(name, "unmatched", reason)
+        else:
+            record(name, "kept", f"{verb}: unmatch proposed ({reason})")
+    approvals.send(f"cupid-daemon {app}: {sum(1 for r in rows if r[2] == 'reply sent')} replies sent, {sum(1 for r in rows if r[2] == 'unmatched')} unmatched.")
 
 
 def main():

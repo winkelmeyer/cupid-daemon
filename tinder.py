@@ -8,7 +8,7 @@ PACKAGE = "com.tinder"
 ID = "com.tinder:id/"
 DETAIL = ID + "sparksProfileDetailScrollView"
 STACK = ID + "recs_cardstack"
-NOISE_PREFIXES = ("Reply", "Photo of ", "Photo by ", "More options")
+NOISE_PREFIXES = ("Reply", "Photo of ", "Photo by ", "More options", "Share ", "Unmatch", "Block ", "Report ")
 OUT_OF_LIKES = "(?i).*(out of likes|no daily cap|unlimited likes).*"
 MATCH = "(?i).*it.s a match.*"
 AD_MARKERS = re.compile(r"(?i)^(ad|sponsored|promoted|learn more|visit site|shop now|install|install now|download|sign up|get the app|book now|try double date\.?)$")
@@ -114,8 +114,11 @@ def read_profile(device):
         screenshot(device, "no-detail")
         raise RuntimeError("Tinder profile detail did not open")
     name = device(resourceId=ID + "recs_card_user_headline_name")[0].get_text().rstrip(",").strip()
-    age = device(resourceId=ID + "recs_card_user_headline_age")[0].get_text().strip()
-    lines = [age]
+    return name, read_open_detail(device)
+
+
+def read_open_detail(device):
+    lines = [device(resourceId=ID + "recs_card_user_headline_age")[0].get_text().strip()]
     for _ in range(8):
         for line in detail_lines(device):
             if line not in lines:
@@ -123,7 +126,7 @@ def read_profile(device):
         if not device(resourceId=DETAIL).scroll.forward(steps=40):
             break
         time.sleep(0.8)
-    return name, lines
+    return lines
 
 
 def act(device, button):
