@@ -63,7 +63,7 @@ venv/bin/python scripts/schedule.py enable
 venv/bin/python scripts/schedule.py disable
 ```
 
-`prepare` writes a reviewable plist under `runs/` without enabling it. `enable` requires a passing remote connection check before installing the job. The job starts at 18:00 local time, waits up to three hours, then runs a full Hinge session followed by a full Tinder session. A failure in one app does not stop the other; the job exits non-zero if either failed. It keeps the Mac awake during the delay and run. The Mac must be logged in, awake and online at the scheduled time; this does not configure a system wake timer. Infisical access and the mail app password in the login Keychain must remain available. Output goes to `runs/daily.log`.
+`prepare` writes a reviewable plist under `runs/` without enabling it. `enable` requires a passing remote connection check before installing the job. The job starts at 18:00 local time, waits up to three hours, then runs a full Hinge session followed by a full Tinder session. A failure in one app does not stop the other; the job exits non-zero if either failed. It keeps the Mac awake during the delay and run. The Mac must be logged in, awake and online at the scheduled time; this does not configure a system wake timer. Infisical access and the mail app password in the login Keychain must remain available. Output goes to `runs/daily.log`. Each run raises the phone's screen timeout to three hours and restores the previous value when it ends, so the phone does not lock while the run waits for email approvals. The phone must be unlocked when a run starts; a PIN lock cannot be passed remotely.
 
 ## Tinder
 
